@@ -2,6 +2,7 @@
 import serial
 import numpy as np
 import rospy
+import time
 from tf.transformations import euler_from_quaternion
 
 from std_msgs.msg import Int8, Int32MultiArray, Float64MultiArray, String
@@ -9,9 +10,14 @@ from geometry_msgs.msg import PoseStamped, TwistStamped
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import State
 
+sbus_byteorder = 'big'
+
 MIN_CTL = 1000
 MAX_CTL = 2000
 MID_CTL = 1500
+
+pwmv_invalid_v = 7
+v_sbus_invalid = 7
 
 def angle_diff(a, b):
     error = a - b
@@ -22,41 +28,53 @@ def angle_diff(a, b):
     else:
         return error
 
-def get_bcc(inputStr: str) -> str:
+def get_bcc(inputStr: bytes) -> bytes:
     bcc = 0
-    for i in inputStr.split(' '):
-        bcc = bcc ^ int(i, 16)
-    return f'{bcc:x}'
+    for i in inputStr:
+        bcc = bcc ^ i
+    return bcc.to_bytes(1, sbus_byteorder)
 
-def generate_packet(throttle, yawvel, clutch, servo):
-    head = '0F '
-    ch1 = hex(throttle).replace('x', '') 
-    ch2 = hex(yawvel).replace('x', '') 
-    ch3 = hex(clutch).replace('x', '') 
-    ch4 = hex(servo).replace('x', '') 
-    ch5 = hex(MID_CTL).replace('x', '') 
-    ch6 = hex(MID_CTL).replace('x', '') 
-    ch7 = hex(MID_CTL).replace('x', '') 
-    ch8 = hex(MID_CTL).replace('x', '') 
-    ch9 = hex(MID_CTL).replace('x', '') 
-    ch10 = hex(MID_CTL).replace('x', '') 
-    ch11 = hex(MID_CTL).replace('x', '') 
-    ch12 = hex(MID_CTL).replace('x', '') 
-    ch13 = hex(MID_CTL).replace('x', '') 
-    ch14 = hex(MID_CTL).replace('x', '') 
-    ch15 = hex(MID_CTL).replace('x', '') 
-    ch16 = hex(MID_CTL).replace('x', '') 
-    Flag = '00 '
-    packet = ch1+' '+ch2+' '+ch3+' '+ch4+' '+ch5+' '+ch6+' '+ch7+' '+ch8+' '+ch9+' '+ch10+' '+ch11+' '+ch12+' '+ch13+' '+ch14+' '+ch15+' '+ch16 
-    XOR = get_bcc(packet)
-    if XOR == '0':
-        XOR = '00'
+def val_inavchval(input: int) -> int:
+    if input>=2115:
+        ret =  input
+    elif input>=885:
+        ret = 9+int((input-885)*1.6)
     else:
-        XOR = XOR[:2]
-        XOR = XOR[::-1]
-    packet = head + packet + ' ' + Flag + XOR
-    bytes_hex = bytes.fromhex(packet)
-    return bytes_hex
+        ret =  input
+    return ret
+
+def generate_packet(throttle, yawvel, servo, clutch):
+
+    throttle = val_inavchval(throttle)
+    yawvel = val_inavchval(yawvel)
+    servo = val_inavchval(servo)
+    clutch = val_inavchval(clutch)
+    _invalid = val_inavchval(pwmv_invalid_v)
+
+    head =  bytes.fromhex('0f')
+    ch1 = _invalid.to_bytes(2, byteorder=sbus_byteorder)  # roll
+    ch2 = _invalid.to_bytes(2, byteorder=sbus_byteorder)  # pitch
+    ch3 = throttle.to_bytes(2, byteorder=sbus_byteorder)  # throttle
+    ch4 = yawvel.to_bytes(2, byteorder=sbus_byteorder) # yawvel
+    ch5 = _invalid.to_bytes(2, byteorder=sbus_byteorder)
+    ch6 = _invalid.to_bytes(2, byteorder=sbus_byteorder)
+    ch7 = servo.to_bytes(2, byteorder=sbus_byteorder)  # transform left
+    ch8 = _invalid.to_bytes(2, byteorder=sbus_byteorder)
+    ch9 = _invalid.to_bytes(2, byteorder=sbus_byteorder)
+    ch10 = servo.to_bytes(2, byteorder=sbus_byteorder)  # transform right
+    ch11 = _invalid.to_bytes(2, byteorder=sbus_byteorder)
+    ch12 = _invalid.to_bytes(2, byteorder=sbus_byteorder)
+    ch13 = _invalid.to_bytes(2, byteorder=sbus_byteorder)
+    ch14 = _invalid.to_bytes(2, byteorder=sbus_byteorder)
+    ch15 = _invalid.to_bytes(2, byteorder=sbus_byteorder)
+    ch16 = _invalid.to_bytes(2, byteorder=sbus_byteorder)
+    Flag = bytes.fromhex('00')
+
+    packet = ch1 + ch2 + ch3 + ch4 + ch5 + ch6 + ch7 + ch8 + ch9 + ch10 + ch11 + ch12 + ch13 + ch14 + ch15 + ch16 + Flag
+    XOR = get_bcc(packet)
+    packet = head + packet + XOR
+
+    return packet
 
 def num_sat_limit(num, max_vel: float):
     if num < 0:
@@ -194,7 +212,7 @@ class CarControlNode:
             return
         msg = Int32MultiArray()
         if self.car_mode_enabled:
-            msg.data = [self.control[0], self.control[1], MAX_CTL, MAX_CTL]
+            msg.data = [self.control[0], self.control[1], MAX_CTL-200, MAX_CTL]
         else:
             msg.data = [self.control[0], self.control[1], MIN_CTL, MIN_CTL]
         self.cmd_pub.publish(msg)
@@ -221,7 +239,7 @@ class CarControlNode:
         
         lin_vel_ctl = num_sat_limit(lin_vel_cmd, 500)
         ang_vel_ctl = num_sat_limit(ang_vel_cmd, 500)
-        ctl_bytes = generate_packet(lin_vel_ctl+1500, ang_vel_ctl+1500, MAX_CTL, MAX_CTL)
+        ctl_bytes = generate_packet(lin_vel_ctl+1500, ang_vel_ctl+1500, MAX_CTL-200, MAX_CTL)
         suc = self.ser.write(ctl_bytes)
         if suc:
             self.last_control = self.control
