@@ -16,9 +16,6 @@ MIN_CTL = 1000
 MAX_CTL = 2000
 MID_CTL = 1500
 
-pwmv_invalid_v = 1500
-v_sbus_invalid = 7
-
 def angle_diff(a, b):
     error = a - b
     if error < -np.pi:
@@ -52,7 +49,7 @@ def generate_packet(throttle, yawvel, servo, clutch):
     yawvel = val_inavchval(yawvel)
     servo = val_inavchval(servo)
     clutch = val_inavchval(clutch)
-    _invalid = val_inavchval(pwmv_invalid_v)
+    _invalid = val_inavchval(MID_CTL)
     
     print("-> cv: ", throttle, " ", yawvel, " ", clutch, " ", servo)
 
@@ -129,10 +126,10 @@ class CarControlNode:
         self.pos_kp = rospy.get_param("pos_kp", 1.)
         self.pos_kd = rospy.get_param("pos_kd", 0.)
         self.pos_ki = rospy.get_param("pos_ki", 0.)
-        self.lin_vel_kp = rospy.get_param("lin_vel_kp", 100.)
+        self.lin_vel_kp = rospy.get_param("lin_vel_kp", 10.)
         self.lin_vel_kd = rospy.get_param("lin_vel_kd", 0.)
         self.lin_vel_ki = rospy.get_param("lin_vel_ki", 0.)
-        self.yaw_vel_kp = rospy.get_param("yaw_vel_kp", 100.)
+        self.yaw_vel_kp = rospy.get_param("yaw_vel_kp", 10.)
         self.yaw_vel_kd = rospy.get_param("yaw_vel_kd", 0.)
         self.yaw_vel_ki = rospy.get_param("yaw_vel_ki", 0.)
         self.control = [MID_CTL, MID_CTL]
@@ -252,7 +249,7 @@ class CarControlNode:
         
         lin_vel_ctl = num_sat_limit(lin_vel_cmd, 500)
         ang_vel_ctl = num_sat_limit(ang_vel_cmd, 500)
-        ctl_bytes = generate_packet(lin_vel_ctl+1500, ang_vel_ctl+1500, MAX_CTL-200, MAX_CTL)
+        ctl_bytes = generate_packet(lin_vel_ctl+MID_CTL, ang_vel_ctl+MID_CTL, MAX_CTL-200, MAX_CTL)
         suc = self.ser.write(ctl_bytes)
         if suc:
             self.last_control = self.control
@@ -262,5 +259,11 @@ class CarControlNode:
 if __name__ == '__main__':
     rospy.init_node("car_control_node")
     car = CarControlNode()
-
     rospy.spin()
+
+    stop_bytes = generate_packet(MID_CTL, MID_CTL, MAX_CTL-200, MAX_CTL)
+    suc = False
+    while not suc:
+        suc = car.ser.write(stop_bytes)
+        time.sleep(1.0)
+    print("Car Stopped Successfully!")
