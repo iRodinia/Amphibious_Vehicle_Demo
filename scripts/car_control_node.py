@@ -16,7 +16,7 @@ MIN_CTL = 1000
 MAX_CTL = 2000
 MID_CTL = 1500
 
-pwmv_invalid_v = 7
+pwmv_invalid_v = 1500
 v_sbus_invalid = 7
 
 def angle_diff(a, b):
@@ -35,21 +35,26 @@ def get_bcc(inputStr: bytes) -> bytes:
     return bcc.to_bytes(1, sbus_byteorder)
 
 def val_inavchval(input: int) -> int:
-    if input>=2115:
-        ret =  input
-    elif input>=885:
+    if input >= 2115:
+        ret = input
+    elif input >= 885:
         ret = 9+int((input-885)*1.6)
     else:
         ret =  input
     return ret
 
 def generate_packet(throttle, yawvel, servo, clutch):
-
+    servo = min(1800, servo)
+    
+    print("->input: ", throttle, " ", yawvel, " ", clutch, " ", servo)
+    
     throttle = val_inavchval(throttle)
     yawvel = val_inavchval(yawvel)
     servo = val_inavchval(servo)
     clutch = val_inavchval(clutch)
     _invalid = val_inavchval(pwmv_invalid_v)
+    
+    print("-> cv: ", throttle, " ", yawvel, " ", clutch, " ", servo)
 
     head =  bytes.fromhex('0f')
     ch1 = _invalid.to_bytes(2, byteorder=sbus_byteorder)  # roll
@@ -73,6 +78,8 @@ def generate_packet(throttle, yawvel, servo, clutch):
     packet = ch1 + ch2 + ch3 + ch4 + ch5 + ch6 + ch7 + ch8 + ch9 + ch10 + ch11 + ch12 + ch13 + ch14 + ch15 + ch16 + Flag
     XOR = get_bcc(packet)
     packet = head + packet + XOR
+    
+    print("<-packet_value: ",len(packet), packet.hex())
 
     return packet
 
@@ -104,8 +111,8 @@ class CarControlNode:
         self.yawrate_set = 0.
         self.yawrate_state = 0.
 
-        self.com = int(rospy.get_param("COM_number", 2))
-        self.ser = serial.Serial("COM"+str(self.com), 115200, timeout = 0.02)
+        self.com = int(rospy.get_param("COM_number", 0))
+        self.ser = serial.Serial("/dev/ttyUSB"+str(self.com), 115200, timeout = 0.02)
         self.ctrl_dt = rospy.get_param("control_dt", 0.01)
         mode_sub_topic = rospy.get_param("vehicle_mode_topic", 'vehicle/mode')
         self.mode_sub = rospy.Subscriber(mode_sub_topic, Int8, self.mode_callback)
@@ -145,7 +152,12 @@ class CarControlNode:
             rospy.loginfo("Initialized with flight mode.")
 
     def mode_callback(self, msg: Int8):
-        tmp_mode = bool(msg.data)
+        rospy.loginfo("Receive target mode %d" % msg.data)
+        rospy.loginfo("Temporary mode %d" % int(self.car_mode_enabled))
+        if msg.data == 0:
+            tmp_mode = False
+        else:
+            tmp_mode = True
         if tmp_mode == self.car_mode_enabled:
             return
         else:
@@ -158,6 +170,7 @@ class CarControlNode:
                 rospy.logwarn("Unable to change vehicle mode!")
                 return
             else:
+                rospy.loginfo("Mode changed to: %d" % int(self.car_mode_enabled))
                 self.car_mode_enabled = tmp_mode
                 self.control = [MID_CTL, MID_CTL]
                 self.last_control = [MID_CTL, MID_CTL]
@@ -222,7 +235,7 @@ class CarControlNode:
             return
         
         pos_err = np.array([self.pos_set[0] - self.pos_state[0], self.pos_set[1] - self.pos_state[1]])
-        vel_err = np.array([self.vel_set[0] - self.vel_state[0], self.vel_set[1] - self.vel_state[1]])
+        vel_err = self.vel_set - self.vel_state
         self.pos_err_int += self.ctrl_dt * pos_err
         self.pos_err_int = vec_sat_limit(self.pos_err_int, self.max_pos_err)
         vel_err_cmd = self.pos_kp * pos_err + self.pos_kd * vel_err + self.pos_ki * self.pos_err_int
